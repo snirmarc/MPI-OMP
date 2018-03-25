@@ -1,0 +1,674 @@
+\documentclass[twoside,11pt]{article}
+ \usepackage{color}
+\usepackage{amsmath, amssymb}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{caption}
+\newcommand{\TBD}[1]{\noindent\textcolor{red}{[TBD: #1]}}
+
+
+\title{\LARGE \bf MPI-OpenMP Interface}
+ 
+\author{Marc Snir} 
+
+ 
+\begin{document}
+ 
+\maketitle
+
+\section{Introduction}
+We cover in this document two topics:
+\begin{enumerate}
+	\item The interaction of MPI with the threading and tasking constructs of 
+	OpenMP
+	\item The interaction of MPI with the accelerator constructs of OpenMP.
+\end{enumerate}
+
+For each of them, we discuss the procide intended semantics, possible required 
+changes in MPI or OpenMP stanard APIs and required implementation work.
+
+\subsection{Goals}
+The main goal of this document is to propose mechanisms that would provide 
+efficient support of the MPI+X programming 
+model where X is OpenMP. Most of the discussion applies as well to OpenACC. The 
+efficient support should extend to nodes with high core counts, systems with 
+accelerators, and systems with heterogeneous memory. 
+
+The proposed mechanisms should not break existing codes and should be 
+reasonably easy to implement.
+
+\subsection{Requirements}
+We assume that, as the 
+nubmer of cores per node keeps increasing, it will become imperative to support 
+concurrent MPI communications from multiple threads -- support efficiently 
+\texttt{MPI\_THREAD\_MULTIPLE}. Efficient support for 
+\texttt{MPI\_THREAD\_MULTIPLE} is addressed 
+my another milestone of the exascale MPI project.
+
+An MPI implementation may use a dedicated progress thread (or several) to poll 
+for incoming messages and execute any MPI logic that is not directly associated 
+with MPI calls. Other libraries may have their own requirements for dedicated 
+servers. We assume that mechanisms are provided for supporting the allocation 
+of dedicated hardware resources to MPI or other libraries; or. more generally, 
+for providing Quality of Service guarantees to different subsystems.
+
+\subsection{MPI}
+	The MPI 3.1 standard defines how MPI interacts with threads (Chapter 12.4 
+	of 
+	MP31 Report): MPI processes can be multithreaded; in the 
+	\texttt{MPI\_THREAD\_MULTIPLE} mode, multiple threads can invoke MPI calls 
+	concurrently; a blocking MPI call blocks the calling thread but does not 
+	block other threads; and a 
+	non-blocking call that is started by one thread can be completed by another 
+	thread. 
+	
+	Note that the MPI standard does not define what an MPI "process" and 
+	"thread" are; most MPI implementations equate an MPI process with a POSIX 
+	process and an MPI thread with a POSIX thread; some MPI implementations 
+	equate an MPI process with a POSIX thread. In such implementations, an MPI 
+	process is single-threaded.	
+	
+	The MPI forum is discussing several proposals that could be relevant to 
+	this document. Among them:
+	
+	\paragraph{Interoperability with task-based runtimes} (\#75) This would add 
+	an \texttt{MPI\_TASK\_MULTIPLE} mode to MPI and require that a blocking MPI 
+	call blockes only the executing task. As for 
+	\texttt{MPI\_THREAD\_MULTIPLE}, the proposal does not define what a "task" 
+	is; unlike  \texttt{MPI\_THREAD\_MULTIPLE}, there is no current (de facto 
+	or de jure) standard for task runtimes, and different systems use different 
+	runtimes. This may reduce the usefulness of this proposal.
+	
+	\paragraph{Callback-driven event interface for MPI\_T} (\#79) This would 
+	provide an interface for the specification of callback functions to be 
+	invoked when certain MPI events happen; e.g., when a receive matches a 
+	send. This interface may facilitate the implementation of some of the 
+	mechanisms proposed in this document -- to the least, in a prototype form.
+	
+	\paragraph{Endpoints} (\#56) This would enable an MPI process to "own" 
+	multiple ranks, each providing the usal semantics of of an MPI process. 
+	This may enable to split the MPI traffic into independent streams, thus 
+	reducing thrashing.
+	
+	\subsection{OpenMP}
+	\subsubsection{Tasks}
+	The OpenMP standard has progressively moved from a focus on parallel loops 
+	to a focus on \emph{tasks}. Tasks can be explicitly spawned with a 
+	\texttt{task} or \texttt{taskloop} construct. They can be suspended at task 
+	scheduling points defined by OpenMP; these include task invocation of 
+	\texttt{taskyield}. Some tasks are \texttt{untied} and can be execute by 
+	any thread in the relevant 
+	team, and can be migrated at task scheduling points; other are 
+	\texttt{tied}  to the thread that spawned them.
+	thread. Tasks can have priorities, but priorities are only hints and 
+	implementations can ignore them. Under some conditions, a task may be 
+	\texttt{included} with its parent task, so that it can be implemented as 
+	a function call on the parent task, rather than having its own stack and 
+	being scheduled separately. Such a task is executed as soon as it is 
+	spawned. 
+	
+	In addition to task parallelism, OpenMP supports two other parallel 
+	programming models:
+	\begin{description}
+		\item[Thread parallelism], where each thread executes a copy of the 
+		same code and the number of threads is fixed.
+		\item[Work sharing], where threads are dynamically allocate chuncks of 
+		code to execute; the most frequently used work sharing construct is the 
+		parallel loop, where chunks of iterates are allocated to threads. 
+	\end{description}
+	In each of these cases, each thread is considered to execute one 
+	\texttt{implicit task}. Thus, unless a \texttt{static} schedule is used to 
+	schedule iterates of a parallel loop, the association of iterates with 
+	these implicit tasks is determined by the runtime, and may vary form 
+	execution to execution.
+	
+	The OpenMP standard 4.5 does not discuss how OpenMP code interoperates 
+	with external services such as I/O. Thus, there is no model to follow in 
+	defining the interaction of OpenMP with MPI.  
+	
+	The OpenMP standard does not specify any fairness properties 
+	for the OpenMP task scheduler. OpenMP code has to be 
+	written so that, no matter what decision the scheduler makes at each 
+	scheduling point, the execution will complete. Pragmatically, 
+	implementations seem to use variants of work-stealing scheduling: A thread 
+	schedules locally generated tasks, if such are available, and steals untied 
+	tasks from other threads, otherwise.
+	
+	\subsubsection{Accelerators}
+	OpenMP provides \texttt{target} constructs that may be used to program 
+	accelerators. These constructs specify what code should be executed on a 
+	separate device, and control the data environment of the device. At any 
+	point in time, variables are either \emph{owned} by the main CPU or by a 
+	device (formal terminology: variables are either mapped in the host data 
+	environment or the device data environment). OpenMP provides mechanisms for 
+	allocating variable so as to be initially
+	owned by one or another, and for transferring ownership of a variable or an 
+	array section. CPU or device should only access data they own. Each 
+	variable referred in the program can be mapped in either data environments 
+	but the reference expression is the same, irrespective to where the 
+	variable is mapped.
+	
+	OpenMP (and OpenACC) are agnostic about the mechanisms for allocating 
+	memory and transferring ownership: If CPU and device have separate memories 
+	and can only access their own memory, then ownership transfer requires 
+	copying 
+	the data from one memory to the other; if they share a unified memory, 
+	ownership transfer could be a 
+	noop, but copying could be used to improve performance.
+	
+	\subsubsection{OpenMP 5.0}
+	
+	OpenMP 5.0 is planned to introduce a new tool interface, where a tool 
+	builder can specify callback functions that will be invoked when specific 
+	runtime events happen, such as the spawning of a task. Such an interface 
+	can be used to add new functionality to such events, in a prototype 
+	implementation.
+	
+	\section{MPI+Tasks}
+		The key decision to make about the semantics of MPI+OpenMP is the 
+	following: When a blockign MPI call is made, what is blocked?
+	
+	We propose three levels of interoperability between MPI and OpenMP:
+	\begin{description}
+		\item[Sequential:] 
+		MPI calls can only be done by the master thread. Typically. MPI calls 
+		will occur in sequential parts of the execution, when only the master 
+		threads execute OpenMP code; but they may occur also during parallel 
+		sections, or inside explicit task sections -- provide the call executes 
+		on the master thread.
+		\item[Thread-parallel:]
+		MPI calls can be invoked concurrently on distinct threads. If the MPI 
+		call is blocking, then the thread that executed the call is blocked, 
+		until the call returns. Thus, in a parallel section, the implicit task 
+		associated with the thread makes no progress until the MPI call 
+		returns. If the parallel section executes a parallel loop where 
+		iterates are scheduled statically, iterates allocated to the calling 
+		thread are not executed until the MPI call returns; and tasks tied to 
+		this thread are not executed until the MPI call returns.
+		\item[Task-parallel:]
+		MPI calls can be invoked concurrently on distinct threads. If the MPI 
+		call is blocking then the implicit or explicit task that executed the 
+		call will block until the call returns. The behavior of the execution 
+		is as if the blocking 
+		MPI call spawned an undeferred task that executes the blocking call. 
+		Thus, for calls executed in 
+		parallel regions outside explicit tasks, the behavior is the same as 
+		for the thread-parallel model. If the call occurs within an explicit 
+		task then the blocking MPI call is a task scheduling point; another 
+		task may be run on the thread that executed the blocking MPI call. The 
+		calling task may resume once the blocking MPI call has completed. If it 
+		is tied it will resume on the same thread; otherwise, it may resume on 
+		another thread. If an included task executes the blocking MPI call, 
+		then the including 
+		parent task will block until the call completes.
+	\end{description}
+
+A program that runs correctly in the sequential mode will also execute 
+correctly in the thread-parallel mode; a program that runs correctly in the 
+thread-parallel mode will also run correctly in the task-parallel mode. This, 
+the proposal will not 
+\subsection{Programming Interface}
+We describe here the application programming interface that will exposed by MPI 
+and OpenMP.
+\subsubsection{MPI}
+The four thread modes of MPI are augmented by a fifth mode, 
+\texttt{MPI\_TASK\_MULTIPLE}. \texttt{MPI\_THREAD\_FUNNELLED} is required for 
+the OpenMP sequential mode; \texttt{MPI\_THREAD\_MULTIPLE} is required for the 
+OpenMP thread-parallel mode; and the \texttt{MPI\_TASK\_MULTPLE} is required 
+for the OpenMP task-parallel mode.  
+\subsubsection{OPenMP}
+A new ICV \emph{external-var} is added to specify the interaction model with 
+MPI or other libraries with blocking calls.
+It can be set using the environment variable \texttt{OMP\_EXTERNAL} that has 
+default 
+value implementation defined and possible values  "master", 
+"thread" and "task", respectively (capitalized version are 
+also accepted).
+
+The value of this ICV can be set with a call to \texttt{omp\_set\_external()} 
+and 
+can 
+be queried with a call to \texttt\texttt{omp\_get\_external()}. This ICV can be 
+set 
+only before the call to \texttt{MPI\_INIT()}. This ICV determines how OpenMP 
+interoperates with external library: 
+\begin{description}
+	\item[master] Blocking calls can occur only on master thread
+	\item[thread] Blocking calls can occur on any thread and block the calling 
+	thread
+	\item[task] Blocking calls can occur on any thread and block the calling 
+	task
+\end{description}
+
+Implementations may support only one of the three levels of MPI-OpenMP 
+interoperability. If the implementation does not support a certain level of 
+MPI-OpenMP interoperability, then a call to \texttt{omp\_set\_external()} that 
+attempts to set to an unsupported level will have no effect.
+
+\subsection{Implementation and internal APIs}
+We propose to have the MPI library and the OpenMP runtime communicate via a 
+commone "signal/wait" mechanism; this will be a light-weight version of the 
+signal/wait pthread synchronization, with the following two functions:
+
+\texttt{crt\_wait(crt\_cond\_t *cond)}
+\\
+\texttt{crt\_signal(crt\_cond\_t *cond)}
+
+For each condition variable, the calls to wait and signal must alternate, 
+starting with a 
+wait call; the outcome is undefined if there are two successive wait calls 
+or two successive signal calls to the same condition variable, or if the first 
+call to a condition variable
+is a signal call. 
+These constraints reduce the overhead in implementing the function.
+The condition variable  has two states: on and off. The initial state is 
+on. A call to 
+\texttt{crt\_signal(cond)} occurs when the condition is off  and changes it 
+to 
+on. A call 
+to 
+\texttt{crt\_wait(cond)} occurs when the condition in on
+and changes it to off. 
+A thread (resp. task) that invokes wait is blocked and cannot execute until a 
+signal call sets the condition to on.
+
+ (We use "crt" as the name space for \emph{common run-time} functions; this can 
+ be changed.)
+	
+\subsubsection{OpenMP}
+
+The OpenMP runtime must provide an implementation of of these two functions, 
+and export it for use by the MPI library.
+
+\begin{itemize}
+	\item 
+If the OpenMP mode is \texttt{master} then \texttt{crt\_wait(cond)}  and
+\texttt{crt\_signal(cond)} can be noops. 
+\item
+If OpenMP is in the \texttt{thread} mode then \texttt{crt\_wait(cond)}  marks 
+the calling thread as not runnable until the condition is set on by a call to 
+\texttt{crt\_signal(cond)}
+\item
+If OpenMP is in the \texttt{task} mode then \texttt{crt\_wait(cond)}  marks 
+the calling task as not runnable until the is set on by a call to 
+\texttt{crt\_signal(cond)}
+\end{itemize}	
+ 
+The OpenMP scheduler must be cognizant of condition objects. The simplest 
+(inefficient) support would be that when a thread (resp. task) is scheduled, 
+then it first checks the value of the associated condition object and yields if 
+it is 
+still 
+off. This brute force approach can be implemented for tasks using the 
+OpenMP 5 
+proposed tool interface, via the \texttt{ompt\_callback\_task\_schedule\_t} 
+callback. This approach can be inefficient when multiple threads (resp. tasks) 
+are blocked as the same blocked task could be woken up repeatedly only to yield.
+
+A more efficient support would require changes in the scheduler code, 
+so that the thread (resp. task) scheduler would avoid scheduling blocked 
+threads (resp. tasks). Note that efficient OpenMP support to task dependencies 
+requires a mechanism to mark tasks as blocked until their dependencies are 
+satisfied. Same mechanism can be used here.
+
+In addition, the implementation of this interface requires the use of a "hard 
+yield" that returns control to the scheduler.  For threads, the POSIX 
+\texttt{pthread\_yield()} is a hard yield. For tasks, an OpenMP runtime can 
+implement \texttt{omp task yield} as a noop, so a different function (or a more 
+reasonable implementation of \texttt{pthread\_yield()}) is needed.
+
+\subsubsection{MPI}
+
+We assume that when a communication is initiated, if it cannot be completed 
+immediately, then a request entry is allocated to keep track of the 
+communication 
+status. This is a request object allocated by the user, in the case of a 
+nonblocking communication; it is an MPI-internal structure, for a blocking 
+communication that cannot complete immediately.
+
+A condition variable has to be associated with a thread or task that is waiting 
+for a communication to complete, and with a request entry, allowing MPI to 
+signal the condition when the communication completes.
+
+There are two possible design choices:
+\begin{enumerate}
+	\item 
+	Condition variables are permanently associated with thread or tasks and 
+	dynamically associated with requests: The OpenMP 
+	runtime allocates them when tasks are created or threads initialized.
+	When the thread (resp. task) makes a blocking MPI call, if the call cannot 
+	return immediately, then the address of the condition variable is stored in 
+	the appropriate request.
+	\item 
+	Condition variables are permanently associated with MPI requests: The MPI 
+	library 
+	allocates them when a request object is created. A call to 
+	\texttt{crt\_wait(cond)} associates the request object with the invoking 
+	thread or task
+\end{enumerate}
+
+In both cases, when the communication completes, the MPI library calls 
+\texttt{crt\_signal(cond)} on the condition associated with the request.
+
+The first choice seems preferable: OpenMP already needs a mechanism to handle 
+task dependencies and to signal that a dependency has been satisfied. This 
+proposal externalizes a mechanism that already exists in some form. 
+ 
+Note that a usual way of implementing synchronizers such as locks is to 
+associate with each a queue of waiting threads or tasks. Here, the queue has 
+length at most one, so a bit in the thread or task structure, or a bit in a 
+scheduling table seems more appropriate. (The handling of task dependencies may 
+require a counter, rahter than bit, in order to handle multiple depedncies.) 
+
+With either designs, calls to signal 
+and wait will properly alternate. A blocked thread or task is waiting for a 
+unique event to be signaled; and a request is associated with a unique thread 
+or task.
+
+The proposal requires minimal changes in the MPI code -- namely, an extra field 
+in requests objects, and a call to \texttt{crt\_signal()} upon completion of a 
+communication.
+
+\section{MPI+devices}
+
+The interaction between MPI and the \texttt{target} constructs of OpenMP comes 
+down to two questions:
+\begin{enumerate}
+	\item 
+	Can MPI calls be invoked on a device?
+	\item 
+	Can an MPI call executed on a CPU transfer data to or from device memory, 
+	and, conversely, can an MPI call executed on a device transfer data to or 
+	from host memory?
+\end{enumerate}
+
+The options can be described by a $2\times 2$ table:
+
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & & \\
+    \cline{2-4}
+	& device & & \\
+	\hline
+\end{tabular}
+
+The "which" row describes what engine is calling MPI; the "where" column 
+describes which dataspace is accessed by MPI. For two-sided communication 
+"where" refers to the local buffer (send buffer for \texttt{MPI\_SEND()} and 
+receive buffer for \texttt{MPI\_Recv()}). For One-sided communication this 
+refers to the local buffer and remote window.
+
+The current default is:
+\begin{table}[H]
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & yes & no \\
+	\cline{2-4}
+	& device & no & no \\
+	\hline
+\end{tabular}
+\end{table}
+Data can be sent and received by the host when windows and communication 
+buffers are in the host data environment.
+
+There are 15 possible table configurations, but not all of those make sense:  
+For example, a configuration where device can only communicate to host data 
+environment and host can only communicate to device data environment does not 
+seem very useful. 
+Also, it is likely that even if the device can execute performance critical MPI 
+functions, it will delegate to host the execution of most MPI functions. So, we 
+assume that if device can call MPI, the host will also be able to communicate 
+to device memory. This leaves four possible combinations:
+
+\begin{table}[H]
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & yes & no \\
+	\cline{2-4}
+	& device & no & no \\
+	\hline
+	\end{tabular}
+\caption*{Level 1: Host with host data environment}
+\end{table}
+
+\begin{table}[H]
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & yes & yes \\
+	\cline{2-4}
+	& device & no & no \\
+	\hline
+	\end{tabular}
+	\caption*{Level 2: Host with host and device data environment}
+\end{table}
+
+\begin{table}[H]
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & yes & yes \\
+	\cline{2-4}
+	& device & no & yes \\
+	\hline
+	\end{tabular}
+	\caption*{Level 3: Host with host and device data environment; device with 
+	device 
+	data environment}
+\end{table}
+
+\begin{table}[H]
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & yes & yes \\
+	\cline{2-4}
+	& device & yes & yes \\
+	\hline
+	\end{tabular}
+	\caption*{Level 4: Host and device with host and device data environment}
+\end{table}
+
+
+We propose to use a new MPI environment variable to specify what level of 
+device support is provided.  Like other environment 
+variables, this is an attribute that is attached to the communicator 
+\texttt{MPI\_COMM\_WORLD} when MPI is initialized. The values of this attribute 
+can be inquired by using the function \texttt{MPI\_COMM\_GET\_ATTR}.
+
+\TBD{Alternatively, could use the same approach as for the levels of thread 
+support}
+
+We believe that level 2 will be most useful in the near future, in order to 
+avoid copying data between device memory to host memory for MPI communications. 
+Level 3 and 4 
+might be hard to implement on Nvidia GPUs since CUDA does not currently 
+support  functions that execute on the 
+host but can be invoked on the GPU; this functionality may appear in the future.
+
+
+ \subsection{Specifying communication buffer}
+With OpenMP, which memory holds a particular variable at a particular point 
+during execution is a decision made by the 
+OpenMP compiler and runtime; the user only specifies when to map variables on 
+the host data environment or the device data environment. This mapping will 
+involve copying data from one memory to another if host and device can only 
+physically access their own memory; it may or may not involve copying if both 
+host and device can access both memories. 
+
+
+An ideal design would have MPI figure out on its own where data actually is 
+currently stored and proceed accordingly. At least one OpenACC compiler 
+extended OpenACC so that code execute correctly even if the user did not map 
+variables into the right data space; the compiler analyzes the code and decide 
+on its own what data needs to be mapped. The same approach can be used for 
+OpenMP. But such an approach would be impractical with MPI: A communication 
+buffer need not be wholly contained within one array or one structure, so that 
+the compiler cannot determine what memory may be accessed by an MPI send or 
+receive call; furthermore, the compiler cannot identify when a window can be 
+the target of a remote one-sided access and what variables will be accessed 
+there. Nonblocking calls are a further obstacle, as the compiler cannot know 
+for how long a communication buffer is exposed.
+
+Therefore we impose the following requirements: 
+\begin{enumerate}
+	\item 
+	The user has to ensure that all data in a communication buffer is mapped 
+	into the same data environment before MPI is called and remains there until 
+	the communication completes locally.
+	\item 
+	If a window was created using a host pointer, then data remotely accessed 
+	in the window has to be mapped in the host data environment while the 
+	window is exposed to remote accesses; if the window was created using a 
+	device pointer then the window data remotely accessed 
+	in the window has to be mapped in the device data environment of the same 
+	device while the 
+	window is exposed to remote accesses.
+	\end{enumerate}
+
+MPI calls with address arguments include 
+\begin{enumerate}
+	\item 
+	Communication calls (one-sided, 
+	two-sided and collective)
+	\item
+	Address and size functions (\texttt{MPI\_GET\_ADDRESS()} and the like in 
+	section 4.1.5 of MPI 3.1)
+	\item 
+	Window creation functions
+\end{enumerate}
+
+MPI calls with address arguments may have to pass additional information: are 
+addresses to be interpreted as referring to host data environment or to the
+data environment of a specific device?
+
+There are several possible ways of passing this information:
+
+\begin{enumerate}
+	\item 
+	No extra information. The MPI library figures it out.
+	\item 
+	Encoded in the address argument: The implementation can encode in a 64 bit 
+	integer device number and address in that devic. The MPI library will know 
+	how to interpret this encoding. This encoding is 
+	valid for the same period that  a device pointer would be, for device 
+	addresses. 
+	\item 
+	Encoded in the datatype argument: The implementation uses an additional bit 
+	in the datatype object to indicate host or device data environment. 
+\end{enumerate}
+
+The options are listed in order of programmer convenience. Performance-wise, 
+the second option is probably fastest, followed by third and first. The first 
+option requires an additional function call to find where data is; the thrid 
+option can use a simple test to proceed if the data is in host memory, and a 
+function call to find the device address otherwise; the thrid option requires a 
+simple test to find where data is and a fiew instructions to extract the device 
+address.
+	
+\subsubsection{Implementation}
+We focus on level 2 support: MPI calls originate on host, but long messages may 
+be transfered directly to or from device memory.
+
+We assume that the OpenMP runtime provides two functions:
+
+\texttt{omp\_target\_location(void * host\_pointer, int *device, void 
+*device\_pointer)} 
+
+This call is passed a host pointer argument
+returns the id of one device that has storage corresponding to the host pointer 
+argument and the corresponding device pointer. A reserved device number (-1) is 
+used to indicate host storage in which case the returned pointer is the same as 
+the provided pointer. This 
+call 
+can be implemented by calling \texttt{omp\_target\_is\_present()} for each 
+possible target; the OpenMP runtime can provide a more direct implementation.
+
+\texttt{omp\_target\_pointer(void* host\_pointer, int *device, void* 
+target\_pointer)}
+
+This call returns a device pointer on the device indicated by the 
+\texttt{device} argument that corresponds to the host pointer argument. The 
+call is erroneous if the device does not have storage corresponding to 
+the host pointer.
+
+If the second option is used (information passed in address argument), then one 
+needs to expose a function to perform the encoding:
+
+\texttt{MPI\_Device\_encode\_location(void * host\_pointer, int *device, Aint
+	*address)} 
+
+The function encodes into address  the device number and the device address 
+corresponding to the host pointer. It is erroneous to call this function if the 
+device has no storage associated with the host address.
+
+If the third option is used (information passed in datatype argument), then one 
+needs to expose a function to to performa this encoding:
+
+\texttt{MPI\_Device\_type(MPI\_Datatype *datatype, MPI\_Datatype *newtype)}	
+ \\
+will create and commit a datatype that indicates that data will be on a device.
+
+
+The MPI library has to figure out what is the relevant data environment for the 
+execution of the call and what is the buffer address in this environment.
+
+With the first option, a call to \texttt{omp\_target\_location()} will return 
+the information.
+
+With the second option, the library obtains this information by decoding the 
+address. This requires a few instructions.
+
+With the third option, MPI will check the datatype bit specifying whehter data 
+is on host or device and, if data is on device, it will invoke 
+\texttt{omp\_target\_location()}
+
+Follow up code is the same in all three cases: The MPI library can decide 
+whether to use a function akin to GPU direct of Nvidia in order to transfer 
+data directly to/from device memory; it can also do packing and unpacking on 
+the device, if appropriate (e.g., for strided communication).
+
+\subsection{One-sided communication}
+
+A window is created either in host memory or device memory. A window might be 
+created before space is allocated for it, with 
+\texttt{MPI\_Win\_create\_dynamic()}; window creation has no datatype argument. 
+So, none of the three methods we suggested for two-sided communication is 
+relevant here. We suggest, instead, to pass the relevant information through 
+the \texttt{info} argument. We reserve a new info key, \texttt{device\_num}, 
+which is integer-valued. The default value is -1, indicating the window is in 
+host memory; other values indicate device memory. Windows in the same group at 
+different MPI processes need not be in the same type of data environment. 
+Different windows on the same node may overlap, and may refer to the same 
+variable with different mappings (in host data enviroment or device data 
+environment).
+
+The MPI library may use rDMA (e.g., Nvidia GPU direct) to move data directly to 
+or from a remote window that is mapped in device data environment. Since window 
+creation calls are collective, information on the type of window (host mapped 
+or device mapped) is available to all the remote MPI processes that access a 
+window.
+
+	
+\end{document}
