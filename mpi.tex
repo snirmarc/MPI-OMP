@@ -1,0 +1,169 @@
+\section{MPI}
+\subsection{Current Standard}
+	The MPI 3.1 standard defines how MPI interacts with threads (Chapter 12.4 
+	of the
+	MPI 3.1 Report): MPI processes can be multithreaded; in the 
+	\texttt{MPI\_THREAD\_FUNNELED} mode all MPI calls must be made by the same 
+	"master" thread, but other compute threads can run concurrently. In the 
+	\texttt{MPI\_THREAD\_MULTIPLE} mode, multiple threads can invoke MPI calls 
+	concurrently; a blocking MPI call blocks the calling thread but does not 
+	block other threads; and a 
+	non-blocking call that is started by one thread can be completed by another 
+	thread. 
+	
+	Note that the MPI standard does not define what an MPI "process" or  
+	a "thread" is. Most MPI implementations equate an MPI process with a POSIX 
+	process and an MPI thread with a POSIX thread. Some MPI implementations 
+	equate an MPI process with a POSIX thread. In such implementations, an MPI 
+	"process" is single-threaded.	
+	
+	\subsection{Performance Issues}
+	We list below several MPI performance issues that affects MPI when 
+	processes have a large thread count.
+	\begin{enumerate}
+		\item 
+			The use of \texttt{MPI\_THREAD\_MULTIPLE} may result in a 
+			significant overhead per MPI communication -- when there is a large 
+			number of simultaneous communications \cite{thakur2009test, 
+			goodell2010minimizing,farmer2016mpi}. In 
+			extreme (and 
+			unrealistic) cases, the overhead per MPI call may increase by two 
+			orders of magnitude \cite{dang2017eliminating}. The main reason is 
+			that current MPI 
+			implementations use coarse-grain locks to ensure mutual exclusion 
+			for concurrent MPI calls -- as these calls need to perform atomic 
+			updates to shared data structures. The problem can be palliated by 
+			the use of finer grain locks, but this tends to increase the 
+			overheads in the low-contention case, as an MPI call will now 
+			involve multiple lock-unlock operations. Finer grain concurrency 
+			code is also more complex and bug-prone, and is avoided even when 
+			concurrency control should be relatively simple, as for one-sided 
+			communication
+			\cite{dosanjh2016rma}.
+			
+			\item 
+			The execution of receive calls slows down when there is a large 
+			number of pending receives 
+			\cite{brightwellseastarqueue,ferreira2017characterizing}. The 
+			reason is that the 
+			matching of sends to receives requires the traversal of a linked 
+			list of unmatched sends (when the receive is posted) or a linked 
+			list of unmatched receives (when the sent message arrives). The 
+			linked list implementation is hard to avoid, due to the requirement 
+			that communication preserves order and the support of wild-card 
+			receives. (Order preservation requires an ordered search; wild-card 
+			receives prevent the hashing of messages into distinct 
+			bucket.) Partial solutions exist \cite{m5}, but the problem worsens 
+			as the number of threads increases.
+			\item 
+			If many threads are blocked, waiting for the completion of 
+			communication calls, then the overhead for waking up each
+			increases: In a typical implementation, a blocked thread is woken 
+			up by the thread scheduler and checks whether the request(s) it is 
+			waiting on is (are) satisfied; if not, it yields control and 
+			another 
+			thread is woken up. If there are many threads, this may result in a 
+			high count of spurious wakeups \cite{dang2017advanced}
+			\item 
+			Progress of MPI communications require the asynchronous execution 
+			of MPI software and of driver software below MPI. This includes 
+			polling for incoming messages and, for long messages, the 
+			initiation of an rDMA transfer once Send and Receive have been 
+			matched (rendezvous protocol). These asynchronous activities are 
+			part of the \emph{progress engine} logic. The progress engine can 
+			execute in one of two ways:
+			\begin{enumerate}
+				\item
+				As a side effect of  MPI calls: Whenever MPI is invoked, in 
+				addition to handling the specific call, the progress engine is 
+				invoked.
+				\item 
+				Using a dedicated \emph{progress thread} that continuously 
+				executes the progress engine.
+						\end{enumerate}
+			The first alternative has the disadvantage that progress may not 
+			occur if no MPI call is invoked. With the rendezvous protocol, when 
+			a Send is issued a "request-to-send" message is sent to the 
+			receiver; the actual transfer of data is started when an ack 
+			message comes back from the receiver. But, with no progress thread, 
+			the actual transfer of data might not occur until the sender 
+			executes 
+			another MPI call, resulting in no overlap between communication and 
+			computation \cite{Denis2016mpioverlap}. Users have managed this 
+			issue by interlacing the 
+			execution with spurious "noop" MPI calls, in order to jump-start 
+			the progress engine. The resulting code is less desirable, from a 
+			Software Engineering perspective (no separation of concerns and 
+			less portability).
+			
+			The second alternative has the disadvantage that a thread is 
+			dedicated to communication and is not available for computation. 
+			This becomes less of an issue with high core counts and 
+			multithreaded cores: In many cases the use of a progress thread 
+			improves overall performance \cite{vaidyanathan2015improving}. Also 
+			techniques, such as 
+			those described in 
+			\cite{hoefler2008message,denis2014pioman},can dynamically vary the 
+			resource 
+			consumption of progress threads.
+			
+			The use of a progress thread is likely to be important for the 
+			performance of non-blocking collective operations: A process that 
+			does not kick-start the progress engine may slow down many other 
+			processes. It is important for the performance of one-sided 
+			communications as those often require the execution of software on 
+			the passive process. Both MPICH and Open MPI and  can be 
+			initialized to run with a progress thread.
+		\end{enumerate}
+	
+
+There is ongoing work, both in MPICH and OpenMP, to palliate the impact of some 
+of these issues
+these issues \cite{balaji2008toward,mpicon2,mpi-thread,dang2017advanced}. Also, 
+vendors may enhance support to 
+MPI in 
+future 
+generations of NICs, thus reducing the impact of these issues. 
+		
+	\subsection{Possible MPI 4 extensions}
+	The MPI forum is discussing several proposals that could be relevant to 
+	this document \cite{MPI4}. Among them:
+	
+	\paragraph{Interoperability with task-based runtimes} (\#75) This would add 
+	an \texttt{MPI\_TASK\_MULTIPLE} mode to MPI. MPI can be initialized with 
+	this mode (in a call to \text{MPI\_THREAD\_INIT()}); if MPI supports this 
+	mode, it will return \texttt{MPI\_TASK\_MULTIPLE} in the \texttt{provided} 
+	argument. In this mode, a blocking MPI 
+	call blocks only the executing task. As for 
+	\texttt{MPI\_THREAD\_MULTIPLE}, the proposal does not define what a "task" 
+	is; unlike  \texttt{MPI\_THREAD\_MULTIPLE}, there is no current (de facto 
+	or de jure) standard for task runtimes, and different systems use different 
+	runtimes. This may reduce the usefulness of this proposal, if it is not 
+	augmented with a standard MPI interface to task libraries, as proposed in 
+	this document.
+	
+	\paragraph{Callback-driven event interface for MPI\_T} (\#79) This would 
+	provide an interface for the specification of callback functions to be 
+	invoked when certain MPI events happen; e.g., when a receive matches a 
+	send. This interface may facilitate the implementation of some of the 
+	mechanisms proposed in this document -- to the least, in a prototype form.
+	
+	\paragraph{Endpoints} (\#56) This would enable an MPI process to 
+	"own" 
+	multiple ranks, each providing the usual semantics of of an MPI process. 
+	This may enable splitting the MPI traffic into independent streams, thus 
+	reducing thrashing.
+	
+	\paragraph{Additional Communicator Assertion Info Keys} (\#11,\#58) This 
+	would 
+	enable to specify that communication on a communicator satisfies 
+	constraints that can be used to improve performance. These include (i) no 
+	use of wild-cards (\texttt{no\_any\_tag, no\_any\_source}), (ii) only use 
+	wild-cards (\texttt{only\_any\_tag, only\_any\_source}, (iii) matching 
+	lengths for send and receive 
+	buffers (\texttt{exact\_length}), (iv) out-of-order message matching 
+	allowed (\texttt{allow\_overtaking}), (v)
+	 restricted use of multithreading (\texttt{thread\_level()}), (vi) no 
+	canceling (\texttt{no\_send\_cancel, no\_recv\_cancel}), and (vii) no use 
+	of derived datatypes (\texttt{no\_derived\_datatypes}).
+	

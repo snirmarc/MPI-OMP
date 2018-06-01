@@ -1,0 +1,212 @@
+\section{MPI \& Tasks}
+		OpenMP is evolving toward having \emph{tasks} being the main construct 
+		for parallelism. The older parallel constructs are reinterpreted in 
+		OpenMP 4.5 as constructs that create \emph{implicit tasks} that are 
+		tied to threads (while \emph{explicit tasks} can be either tied or 
+		untied). Programming will be facilitated if blocking MPI calls block 
+		tasks, rather than threads. If a task blocks in an MPI communication 
+		than the thread executing this task can pick another task for 
+		execution. This will facilitate writing code that uses 
+		over-partitioning for latency hiding, as the OpenMP runtime will 
+		load-balance. The advantage of a task-aware MPI implementation is shown 
+		in \cite{mpiult}. Code that runs with only one task per thread -- in 
+		particular, code that does not use explicit tasks -- will not be 
+		affected, as a thread blocking on an MPI call has no other task to 
+		run.  We say that MPI is \emph{task-aware} if blocking MPI calls block 
+		tasks, rather than threads.
+		
+		A task-aware MPI implementation can be developed with no changes in the 
+		MPI standard: One can simply decree that MPI threads are identified 
+		with OpenMP tasks. Such implementation will have the same semantics as 
+		current implementations, as long as explicit tasks are not used. 
+		However, such an approach can be confusing to users, as the term 
+		"thread"
+		will have different meanings in OpenMP and MPI. It seems less confusing 
+		to add an 
+		explicit  task mode to MPI, as described below
+		
+			
+\subsection{Programming Interface}
+We describe here the application programming interface that will exposed by MPI 
+and OpenMP.
+
+\paragraph{MPI:}
+The four thread modes of MPI are augmented by a fifth mode, 
+\texttt{MPI\_TASK\_MULTIPLE} (as proposed for MPI 4 in proposal \#75). 
+
+If the supported mode is \texttt{MPI\_THREAD\_FUNNELED} then MPI calls can be 
+only executed on the master thread;
+if it is  \texttt{MPI\_THREAD\_MULTIPLE} then all executing threads may call 
+MPI; a blocking MPI call will block the invoking thread; if the mode is 
+\texttt{MPI\_TASK\_MULTIPLE} hen all executing threads may call MPI; a blocking 
+MPI call will block the invoking (implicit or explicit) task.
+
+We propose that implementations will only be required to support one of 
+\texttt{MPI\_THREAD\_MULTIPLE} and \texttt{MPI\_TASK\_MULTIPLE}, but not 
+necessarily both: There is no difference between the two modes for OpenMP code 
+that does not use explicit tasks -- so no back-compatibility problem. 
+
+
+\paragraph{OPenMP:}
+A new ICV \emph{external-var} is added to specify the interaction model with 
+MPI or other libraries with blocking calls.
+It can be set using the environment variable \texttt{OMP\_EXTERNAL} that has 
+an implementation defined default 
+ value and possible values  "master", 
+"thread" and "task", respectively (capitalized version are 
+also accepted).
+
+The value of this ICV can be set with a call to \texttt{omp\_set\_external()} 
+and 
+can 
+be queried with a call to \texttt{omp\_get\_external()}. This ICV can be 
+set 
+only before the call to \texttt{MPI\_INIT()}. This ICV determines how OpenMP 
+interoperates with external library: 
+\begin{description}
+	\item[master] Blocking calls can occur only on master thread
+	\item[thread] Blocking calls can occur on any thread and block the calling 
+	thread
+	\item[task] Blocking calls can occur on any thread and block the calling 
+	task
+\end{description}
+
+Implementations may support only one of the three levels of MPI-OpenMP 
+interoperability. If the implementation does not support a certain level of 
+MPI-OpenMP interoperability, then a call to \texttt{omp\_set\_external()} that 
+attempts to set to an unsupported level will have no effect.
+
+\subsection{Implementation and internal APIs}
+We propose a design that clearly separates the added functionality needed in 
+the OpenMP runtime and the added functionality needed in the MPI runtime. This 
+avoids the all-to-all problem of having a different implementation for each 
+combination of MPI and OpenMP runtimes. 
+
+In this design, the MPI library and the OpenMP runtime communicate via a 
+common "signal/wait" mechanism; the code for this synchronization will be 
+provided by the OpenMP runtime library and used both by the MPI and OpenMP 
+runtimes.
+
+This mechanism is a light-weight version of the 
+signal/wait pthread synchronization, with the following two functions:
+
+\texttt{crt\_wait(crt\_cond\_t *cond)}
+
+\texttt{crt\_signal(crt\_cond\_t *cond)}
+
+For each condition variable, the calls to wait and signal must alternate, 
+starting with a 
+wait call; the outcome is undefined if there are two successive wait calls 
+or two successive signal calls to the same condition variable, or if the first 
+call to a condition variable
+is a signal call. 
+These constraints reduce the overhead in implementing the function.
+The condition variable  has two states: on and off. The initial state is 
+on. A call to 
+\texttt{crt\_signal(cond)} occurs when the condition is off  and changes it 
+to 
+on. A call 
+to 
+\texttt{crt\_wait(cond)} occurs when the condition in on
+and changes it to off. 
+A thread (resp. task) that invokes wait is blocked and cannot execute until a 
+signal call sets the condition to on.
+
+ (We use "crt" as the name space for \emph{common run-time} functions; this can 
+ be changed.)
+	
+\subsubsection{OpenMP}
+
+The OpenMP runtime must provide an implementation of of these two functions, 
+and export it for use by the MPI library.
+
+\begin{itemize}
+	\item 
+If the OpenMP mode is \texttt{master} then \texttt{crt\_wait(cond)}  and\\
+\texttt{crt\_signal(cond)} can be noops. 
+\item
+If OpenMP is in the \texttt{thread} mode then \texttt{crt\_wait(cond)}  marks 
+the calling thread as not runnable until the condition is set on by a call to 
+\texttt{crt\_signal(cond)}
+\item
+If OpenMP is in the \texttt{task} mode then \texttt{crt\_wait(cond)}  marks 
+the calling task as not runnable until the condition is set on by a call to\\
+\texttt{crt\_signal(cond)}
+\end{itemize}	
+ 
+The OpenMP scheduler must be cognizant of condition objects. The simplest 
+(inefficient) support would be that when a thread (resp. task) is scheduled, 
+then it first checks the value of the associated condition object and yields if 
+it is 
+still 
+off. This brute force approach can be implemented for tasks using the 
+OpenMP 5 
+proposed tool interface, via the \texttt{ompt\_callback\_task\_schedule\_t} 
+callback. This approach can be inefficient when multiple threads (resp. tasks) 
+are blocked as the same blocked thread or task could be woken up repeatedly 
+only to yield.
+
+A more efficient support would require changes in the scheduler code, 
+so that the thread (resp. task) scheduler would avoid scheduling blocked 
+threads (resp. tasks). Note that efficient OpenMP support to task dependencies 
+requires a mechanism to mark tasks as blocked until their dependencies are 
+satisfied. The same mechanism can be used here.
+
+In addition, the implementation of this interface requires the use of a "hard 
+yield" that returns control to the scheduler.  For threads, the POSIX 
+\texttt{pthread\_yield()} is a hard yield. For tasks, an OpenMP runtime can 
+implement \texttt{omp task yield} as a noop, so one either needs to change the 
+behavior of \texttt{omp task yield} to be a hard yield, or expose to MPI an 
+additional hard yield function.  
+
+\subsubsection{MPI}
+
+We assume that when a communication is initiated, if it cannot be completed 
+immediately, then a request entry is allocated to keep track of the 
+communication 
+status. This is a request object allocated by the user, in the case of a 
+nonblocking communication; it is an MPI-internal structure, for a blocking 
+communication that cannot complete immediately.
+
+A condition variable has to be associated with a thread or task that is waiting 
+for a communication to complete, and with a request entry, allowing MPI to 
+signal the condition when the communication completes.
+
+There are two possible design choices:
+\begin{enumerate}
+	\item 
+	Condition variables are permanently associated with thread or tasks and 
+	dynamically associated with requests: The OpenMP 
+	runtime allocates them when tasks are created or threads initialized.
+	When the thread (resp. task) makes a blocking MPI call, if the call cannot 
+	return immediately, then the address of the condition variable is stored in 
+	the appropriate request.
+	\item 
+	Condition variables are permanently associated with MPI requests: The MPI 
+	library 
+	allocates them when a request object is created. A call to 
+	\texttt{crt\_wait(cond)} associates the request object with the invoking 
+	thread or task.
+\end{enumerate}
+
+In both cases, when the communication completes, the MPI library calls 
+\texttt{crt\_signal(cond)} on the condition associated with the request.
+
+The first choice seems preferable: OpenMP already needs a mechanism to handle 
+task dependencies and to signal that a dependency has been satisfied. This 
+proposal externalizes a mechanism that already exists in some form. 
+ 
+Note that a usual way of implementing synchronizers such as locks is to 
+associate with each a queue of waiting threads or tasks. Here, the queue has 
+length at most one, so a bit in the thread or task structure, or a bit in a 
+scheduling table seems more appropriate. (The handling of task dependencies may 
+require a counter, rather than bit, in order to handle multiple dependencies.) 
+
+With either designs, calls to signal 
+and wait will properly alternate. A blocked thread or task is waiting for a 
+unique event to be signaled; and a request is associated with a unique thread 
+or task.
+
+The proposal requires minimal changes in the MPI code -- namely, an extra field 
+in requests objects, and a call to \texttt{crt\_signal()} upon completion of a 
+communication.

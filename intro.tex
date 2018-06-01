@@ -1,0 +1,60 @@
+\section{Introduction}
+We cover in this document two topics:
+\begin{enumerate}
+	\item The interaction of MPI with the threading and tasking constructs of 
+	OpenMP (or similar languages)
+	\item The interaction of MPI with the accelerator constructs of OpenMP (or 
+	similar languages).
+\end{enumerate}
+
+For each of them, we discuss current performance issues, best practices for the 
+use of current constructs, possible changes in MPI or OpenMP standard APIs that 
+could alleviate these problems and  required work to implement these changes.
+
+\subsection{Goals}
+The main goal of this document is to propose mechanisms that would provide 
+efficient support of the MPI+X programming 
+model where X is OpenMP. Most of the discussion applies as well to OpenACC. The 
+efficient support should extend to nodes with high core counts, systems with 
+accelerators, and systems with heterogeneous memory. It includes short-term 
+recommendations to users and long-term recommendations to implementers.
+
+The proposed mechanisms should not break existing codes and should be 
+reasonably easy to implement. The recommendations to users should apply to 
+current state-of-the-art and facilitate transition to future implementations.
+
+\subsection{Terminology}
+\begin{description}
+\item[Process:]
+An instance of a computer program that is being executed. It contains the 
+program code, an address space,  and one of multiple threads of execution that 
+execute 
+instructions concurrently
+\item[Thread:] A sequence of programmed instructions that can be managed 
+independently by the OS scheduler (descheduled or rescheduled)
+\item[Task:] (aka User-Level-Thread or Fiber) A  unit of execution that must be 
+manually scheduled by the application or a user-level runtime. Tasks run in the 
+context of the threads 
+that schedule them. They cannot be preempted by the OS (however, the thread 
+executing a task could be preempted). They can Yield or block (Wait) on a 
+synchronization call
+\end{description}
+
+POSIX defines standard APIs for processes and threads, but not for tasks
+
+\dross{
+\subsection{Requirements}
+We assume that, as the 
+nubmer of cores per node keeps increasing, it will become imperative to support 
+concurrent MPI communications from multiple threads -- support efficiently 
+\texttt{MPI\_THREAD\_MULTIPLE}. Efficient support for 
+\texttt{MPI\_THREAD\_MULTIPLE} is addressed 
+by another milestone of the exascale MPI project.
+
+An MPI implementation may use a dedicated progress thread (or several) to poll 
+for incoming messages and execute any MPI logic that is not directly associated 
+with MPI calls. Other libraries may have their own requirements for dedicated 
+servers. We assume that mechanisms are provided for supporting the allocation 
+of dedicated hardware resources to MPI or other libraries; or. more generally, 
+for providing Quality of Service guarantees to different subsystems.
+}

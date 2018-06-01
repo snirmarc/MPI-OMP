@@ -1,0 +1,105 @@
+	\section{MPI + OpenMP parallelism}
+	\subsection{Current State}
+	In current implementations, MPI threads are identified with OpenMP threads. 
+	If the MPI process executes a multithreaded MPI thread then MPI must 
+	executed in mode \texttt{MPI\_THREAD\_FUNNELED} or higher. In the  
+	\texttt{MPI\_THREAD\_FUNNELED} mode all MPI calls should be 
+	executed on the master thread (thread zero). MPI+OpenMP codes are often 
+	written so that MPI calls are executed in sections where the OpenMP code 
+	executes sequentially, so that the execution consists of an alternation of 
+	parallel compute and sequential 
+	communicate phases. This is not necessary: Communication can be concurrent 
+	with computation, as long as it executes on the master 
+	thread. (Synchronization, such as a barrier, is still needed to ensure 
+	proper order between communication calls and code that reads or writes 
+	communication buffers.)
+	
+	The use of concurrent MPI communications can be advantageous when a node 
+	has multiple adapters, or when the node code consists of multiple, mostly 
+	independent executions (as is the case when a code using multiple MPI 
+	processes per node is replaced by a code using multiple threads; see, e.g., 
+	\cite{akhmetova2017performance}). If communications can be separated into 
+	independent 
+	streams, then concurrent MPI communications can be supported simply by 
+	running multiple MPI processes on the same node. On nodes with multiple 
+	adapters, vendors will provide the ability to bound different processes to 
+	distinct adapters; single adapters typically support multiple independent 
+	windows (independent "virtual adapters"). MPI 3 provides support for the 
+	sharing of memory segments by MPI processes running on the same node 
+	(\texttt{MPI\_WIN\_ALLOCATE\_SHARED}).  Node code will consist of multiple 
+	processes each running an OpenMP program. Communication between processes 
+	on the same node can either use MPI calls or a shared segment. The 
+	disadvantage of this approach is the need for two levels of shared-memory 
+	parallelism (interprocess and interthread), the static allocation of 
+	resources to the first level, and the lack of support in C, C++ or Fortran 
+	for two different types of memory.
+	
+	In order to support concurrent MPI calls from one OpenMP program, one will 
+	need to use \texttt{MPI\_THREAD\_MULTIPLE}. With it, any thread can call 
+	MPI. If a thread executes a blocking call (blocking Send or Receive or 
+	Wait), the calling thread stops executing, but the other threads will 
+	continue their execution. In such a case, it is desirable to use work 
+	sharing constructs (parallel loops with a dynamic schedule or untied 
+	tasks), 
+	in order to make sure that the threads that did not call MPI, or completed 
+	their blocking MPI call earlier, pick the load from the threads blocked in 
+	MPI calls. Latency per message will be slightly higher, 
+	assuming 
+	concurrent accesses are rare, it can be significantly higher, if the number 
+	of pending communications per rank grows into the 100's or if many MPI 
+	calls occur simultaneously.
+	
+\subsection{Future}
+The MPICH and the OpenMPI teams are working to improve the performance of MPI 
+with multithreading. One can expect the overhead of 
+\texttt{MPI\_THREAD\_MULTIPLE} to decrease in future MPI releases. One can also 
+expect performance improvements in recent MPI 3 constructs, such as the new 
+functions for one-sided communication, nonblocking collectives and sparse 
+collectives. One-sided communication has the potential to reduce MPI overheads 
+and should be considered, in replacement to two-sided communication, as 
+implementations improve. 
+
+The use of a dedicated progress thread will ensure more consistency in the 
+performance of nonblocking communication calls, and increased communication to 
+computation overlap. It should be considered for any application that  requires 
+communication/computation overlap.
+
+
+If MPI 4 will support multiple endpoints per process, then it will be possible 
+to leverage efficiently multiple NICs per process, and to reduce the thrashing 
+that occurs when many threads call MPI simultaneously: Communication using 
+distinct endpoints do not conflict with each other.
+
+An MPI library can reduce the overhead for matching sends and receives if it is 
+known  that wildcard receives (\texttt{MPI\_ANY\_SOURCE} and 
+\texttt{MPI\_ANY\_TAG}) are not mixed with regular receives for the same 
+communicator. It also becomes much easier to support 
+the matching in hardware. The use of matching lengths for send and receive 
+buffers can save one of the current three message exchanges that are needed in 
+the rendez-vous protocol. If MPI 4 will support the additional communicator 
+info keys (\#11, \#58) and implementations will take advantage of these 
+assertions, 
+then receive performance will not degrade even when there are many pending 
+receives or sends and the rendezvous protocol will have lower latency. Users 
+can prepare their codes for these changes by avoiding 
+the mixing of wild-card receives with regular receives on the same communicator 
+and (less importantly) by matching send buffer and receive buffer lengths. To 
+the extent that 
+current exascale benchmarks are representative, this restrictions will not 
+affect many codes \cite{klenk2017overview}.
+
+The performance of derived datatypes is unlikely to improve much. Basically, 
+a communication that uses a derived datatype has to interpret the datatype, 
+while 
+user-defined pack or unpack code is compiled; compilation beats runtime 
+interpretation. Also, the inplementation of derived datatypes in current MPI 
+libraries seems less than optimal \cite{carpen2017expected}. The situation 
+could 
+be remedied by 
+using a Just-In-Time 
+compiler (JIT) but this is difficult to distribute as part of a library. A 
+refactoring tool that replaces communication using derived datatypes with 
+pack/unpack routines followed by communication using a contiguous buffer, 
+would be useful. The benefit can be very significant for communication buffers 
+on GPUs.
+

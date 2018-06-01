@@ -1,0 +1,83 @@
+	\section{OpenMP}
+	\subsection{Tasks}
+	The OpenMP standard has progressively moved from a focus on parallel loops 
+	to a focus on \emph{tasks}. Tasks can be explicitly spawned with a 
+	\texttt{task} or \texttt{taskloop} construct. They can be suspended at task 
+	scheduling points defined by OpenMP; these include task invocation of 
+	\texttt{taskyield}. Some tasks are \texttt{untied} and can be executed by 
+	any thread in the relevant 
+	team, and can be migrated at task scheduling points; other are 
+	\texttt{tied}  to the thread that spawned them.
+	Tasks can have priorities, but priorities are only hints and 
+	implementations can ignore them. Under some conditions, a task may be 
+	\texttt{included} with its parent task, so that it can be implemented as 
+	a function call on the parent task, rather than having its own stack and 
+	being scheduled separately. Such a task is executed as soon as it is 
+	spawned. 
+	
+	In addition to task parallelism, OpenMP supports two other parallel 
+	programming models:
+	\begin{description}
+		\item[Thread parallelism,] where each thread executes a copy of the 
+		same code and the number of threads is fixed.
+		\item[Work sharing,] where threads are dynamically allocate chunks of 
+		code to execute; the most frequently used work sharing construct is the 
+		parallel loop, where chunks of iterates are allocated to threads. 
+	\end{description}
+	In each of these cases, each thread is considered to execute one 
+	\texttt{implicit task}. Unless a \texttt{static} schedule is used to 
+	schedule iterates of a parallel loop, the association of iterates with 
+	these implicit tasks is determined by the runtime, and may vary from 
+	execution to execution.
+	
+	The OpenMP standard 4.5 does not discuss how OpenMP code interoperates 
+	with external services such as I/O. Thus, there is no model to follow in 
+	defining the interaction of OpenMP with MPI.  
+	
+	The OpenMP standard does not specify any fairness properties 
+	for the OpenMP task scheduler. OpenMP code has to be 
+	written so that, no matter what decision the scheduler makes at each 
+	scheduling point, the execution will complete. Pragmatically, 
+	implementations seem to use variants of work-stealing scheduling: A thread 
+	schedules locally generated tasks, if such are available, and steals untied 
+	tasks from other threads, otherwise.
+	
+	\subsection{Accelerators}
+	OpenMP provides \texttt{target} constructs that may be used to program 
+	accelerators. These constructs specify what code should be executed on a 
+	separate device, and control the data environment of the device. At any 
+	point in time, variables are either \emph{owned} by the host (CPU) or by a 
+	device (accelerator). The formal terminology is that variables are either 
+	mapped in the host data 
+	environment or the device data environment; the mapping may be fixed or 
+	dynamic. OpenMP provides mechanisms for 
+	allocating variable so as to be initially
+	owned by host or accelerator, and for transferring ownership of a variable 
+	or a contiguous
+	array section. Host or device should only access data they own. While the 
+	ammping of a variable may change,
+    the reference expression is the same, irrespective to where the 
+	variable is mapped.
+	
+	OpenMP (and OpenACC) are agnostic about the mechanisms for allocating 
+	memory and transferring ownership: If host and device have separate 
+	memories 
+	and can only access their own memory, then ownership transfer requires 
+	copying 
+	the data from one memory to the other; if they share a unified memory, 
+	ownership transfer could be a 
+	noop, but copying could be used to improve performance. (Typically, host 
+	and device memories have different performance characteristics: Host memory 
+	is larger, has lower latency, but also lower bandwidth; device memory is 
+	smaller, has higher bandwidth but lower latency. In addition, GPU and CPU 
+	have distinct coherence protocols, so that coherent sharing of variables 
+	can be expensive.)
+	
+	\subsection{OpenMP 5.0}
+	
+	OpenMP 5.0 \cite{openmp5} is planned to introduce a new tool interface, 
+	where a tool 
+	builder can specify callback functions that will be invoked when specific 
+	runtime events happen, such as the spawning of a task. Such an interface 
+	can be used to add new functionality to such events, in a prototype 
+	implementation.

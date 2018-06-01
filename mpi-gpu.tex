@@ -1,0 +1,316 @@
+\section{MPI+Devices}
+
+\subsection{Current}
+On current systems, the MPI library executes on the host (CPU); functions 
+executed on the host can only access variables mapped in the host data 
+environment. Thus, in order to send data from the device memory, one needs to 
+map 
+it into the host data environment (possibly copying it to the host memory), 
+then send it; in order to receive data into the device memory, one needs to 
+receive it in the host data environment and remap it into the device data 
+environment (possibly copying it).
+
+If the data to be communicated is not contiguous, then it is
+advantageous to pack and unpack it on the GPU: GPUs have better support to 
+scatter-gather operations than CPUs, and individual GPU/CPU transfers can only 
+transfer contiguous data.
+
+
+\subsection{Future}
+
+The current default can be described by the following $2 \times 2$ table:
+
+\begin{table}[H]
+	\begin{tabular}{|c|c|c|c|}
+		\cline{3-4}
+		\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+		\cline{3-4}
+		\multicolumn{2}{c|}{} & host & device \\
+		\hline
+		\multirow{2}{30 pt}{\textbf{which}} & host & yes & no \\
+		\cline{2-4}
+		& device & no & no \\
+		\hline
+	\end{tabular}
+\end{table}
+
+The "which" row describes where the MPI call is invoked and the "where" column 
+describes where the local communication buffer resides (i.e., in which data 
+environment it is mapped). This is the local send or receive buffer for 
+two-sided communication, and the local window, for one-sided communication.
+
+While systems with a unified memory environment are coming to the market, it 
+seems likely that systems where a mapping from one data environment to another 
+involves data copying will continue 
+to be prevalent in coming years. So, it is desirable to avoid data copying and 
+CPU-GPU communication when MPI is used to communicate from one GPU to another.
+
+The interaction between MPI and the \texttt{target} constructs of OpenMP comes 
+down to two questions:
+\begin{enumerate}
+	\item 
+	Can MPI calls be invoked on a device?
+	\item 
+	Can an MPI call executed on a CPU transfer data to or from device memory, 
+	and, conversely, can an MPI call executed on a device transfer data to or 
+	from host memory?
+\end{enumerate}
+
+Depending on the answers to these two questions  "no" entries in the previous 
+table are replaced by "yes" entries.
+
+There are 16 possible table configurations, but not all of those make sense:  
+For example, a configuration where device can only communicate to host data 
+environment and host can only communicate to device data environment does not 
+seem very useful. 
+Also, it is likely that even if the device can execute performance critical MPI 
+functions, it will delegate to host the execution of most MPI functions. So, we 
+assume that if device can call MPI, the host will also be able to communicate 
+to device memory. This leaves four possible combinations:
+
+\begin{table}[H]
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & yes & no \\
+	\cline{2-4}
+	& device & no & no \\
+	\hline
+	\end{tabular}
+\caption*{Level 1: Host with host data environment}
+\end{table}
+
+\begin{table}[H]
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & yes & yes \\
+	\cline{2-4}
+	& device & no & no \\
+	\hline
+	\end{tabular}
+	\caption*{Level 2: Host with host and device data environment}
+\end{table}
+
+\begin{table}[H]
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & yes & yes \\
+	\cline{2-4}
+	& device & no & yes \\
+	\hline
+	\end{tabular}
+	\caption*{Level 3: Host with host and device data environment; device with 
+	device 
+	data environment}
+\end{table}
+
+\begin{table}[H]
+\begin{tabular}{|c|c|c|c|}
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & \multicolumn{2}{c|}{\textbf{where}} \\
+	\cline{3-4}
+	\multicolumn{2}{c|}{} & host & device \\
+	\hline
+	\multirow{2}{30 pt}{\textbf{which}} & host & yes & yes \\
+	\cline{2-4}
+	& device & yes & yes \\
+	\hline
+	\end{tabular}
+	\caption*{Level 4: Host and device with host and device data environment}
+\end{table}
+
+The most important one, and the easiest to implement, is level 2: MPI is always 
+invoked on the host, but communication buffers can be in the device data 
+environment. This is already supported in MPICH and Open MPI (with some 
+restrictions): The user can pass as address argument a GPU pointer; the MPI 
+library uses the GPUDirect facility of NVIDIA \cite{gpudirect,Shainer2011} for 
+that purpose. A 
+user may also create windows in GPU memory and use them for one-sided 
+communication.
+ 
+We describe below the API changes required in MPI and OpenMP to support this 
+level with a standard API.
+
+\subsubsection{MPI API}
+
+We propose to add further modes to \texttt{MPI\_THREAD\_INIT} or to a 
+replacement 
+call, to indicate level of support by MPI for accelerators. 
+
+One possible 
+syntax, that will allow for later extensions, is
+\\
+\texttt{MPI\_GLOBAL\_INIT(in string, out string)},
+\\ 
+with the first argument 
+containing a list of desired configurations and the second string returning the 
+list of provided configurations. One entry in the string would specify thread 
+level (\texttt{thread\_single, thread\_funelled, thread\_multiple}, and 
+\texttt{task\_multiple}); another entry would specify level of device support: 
+\texttt{memory\_single} for a single data environment, and 
+\texttt{memory\_multiple} for multiple data environments.  (A third entry could 
+specify where the MPI library can be invoked.)
+
+If \texttt{memory\_multiple} is supported then, wherever MPI functions accept 
+an address 
+argument, one can pass a device address as argument.
+
+We choose to add a new initialization routine, rather than further extend 
+\texttt{MPI\_THREAD\_INIT}, since, with two or more different features, it is 
+not 
+obvious anymore how the different combinations should be ordered.
+
+\subsubsection{OpenMP API}
+
+I would be useful (but not necessary) to have a function that can be invoked on 
+the host to return the device address of a variable: 
+\\
+\texttt{void* omp\_get\_address(void* host\_adress, int device\_num)}.\\
+The (costlier) 
+alternative is to dereference a variable on the device and map the result back 
+into the host data environment.
+
+\subsubsection{Limitations}
+
+\begin{enumerate}
+	\item 
+	\texttt{omp\_get\_address} can be invoked only for a variable that is 
+	currently mapped in the space of the specified device.
+	\item 
+	A communication buffer or window should not be remapped while there is an 
+	ongoing communication accessing it
+\end{enumerate}
+
+
+\subsubsection{Memory allocation}
+
+MPI has several calls that allocate memory: These include\\ 
+\texttt{MPI\_ALLOC\_MEM(size, info, baseptr)} and\\ 
+\texttt{MPI\_WIN\_ALLOCATE(size, disp\_unit, info, comm, baseptr, win)}.
+
+We propose that, in these calls, the \texttt{info} argument will be used to 
+specify the data environment where the window is created (default is host). A 
+new reserved info key \texttt{device\_number} is used for this purpose. Device 
+number -1 is 
+used to refer to the host memory.
+
+The same approach is used for the MPI call\\ 
+\texttt{MPI\_WIN\_CREATE\_DYNAMIC(info, comm, win)}.\\ The device number 
+specified by the info argument determines in which data environment the window 
+willl reside. When memory is attached to a dynamic window by a call to 
+\texttt{MPI\_WIN\_ATTACH(win, base, size)}, the provide address \texttt{base} 
+has to be in the data environment of the device specified by the Create call..
+
+\subsubsection{Implementation Notes}
+
+The proposed design assumes that the address ranges for the distinct data 
+environments are disjoint, if they reside in distinct physical locations: There 
+is no 
+aliasing. We also assume that one can easily identify the device that holds a 
+given virtual address. This is true today, and is likely to remain so. If this 
+assumption is broken, then an "MPI address" has to carry information on the 
+data environment in which it resides. Alternatively, one can use new datatypes 
+to carry this information \cite{aji2016mpi}
+
+On a system with unified address space, an OpenMP implementation may decide 
+whether data is copied or not before it is accessed by a GPU: One might copy 
+data for large kernels and not copy it for short kernels or for sparsely 
+accessed data structures. The proposed design will still work correctly, 
+provided that
+
+\begin{itemize}
+	\item 
+	The user invokes \texttt{omp\_get\_address} to find current data location 
+	after each mapping construct.
+	\item Data is remapped only when the code executes an explicit mapping 
+	command for that data. 
+\end{itemize}
+
+If the second condition is broken by a future OpenMP compiler that one will 
+need to further modify OpenMP so as to have "hard" mapping commands (or "hard 
+mapped" variables), where the implementation has to strictly follow the 
+mapping commands of OpenMP. (This condition is broken by some OpenACC 
+compilers.)
+
+\subsubsection{Optimizations}
+A naive implementation of communication from device memory will be inefficient 
+for derived datatypes, as it will break the data transfer into a list of 
+transfers of contiguous blocks. It is much preferred to pack data to be sent 
+on the GPU and unpack data   received at the GPU. This has be done 
+experimentally for vector datatypes \cite{wang2014gpu} and can be progressively 
+extended to other widely used derived datatypes. Alternatively, codes should be 
+refactored to avoid the use of derived datatypes; it should be easy to develop 
+a refactoring tool for this purpose.
+
+Another important optimization is to pipeline long transfer to or from device 
+memory, so as not to hog the I/O bus for long periods \cite{aji2016mpi}
+
+\subsubsection{MPI Invoked on devices}
+
+A full implementation of MPI on GPUs can be time consuming and inneficient:
+The MPI code does not run efficiently of GPUs \cite{Klenk2017}; the sharing of 
+the same rank on host and devices and the sharing of MPI Opaque objects 
+(Communicators, Windows, etc.) are likely to be inefficient. On the other hand, 
+it can be useful to trigger a communication from a device, without involving 
+the host \cite{oden2016analyzing}.
+
+A possible way to achieve this goal with limited additions to MPI would be to 
+use \emph{persistent requests} for this purpose. Currently, a call to 
+\\
+\texttt{MPI\_SEND\_INIT(buf, count, datatype, dest, tag, comm, request)} or\\
+\texttt{MPI\_RECV\_INIT(buf, count, datatype, source, tag, comm, request)}\\
+creates a persistent request for a send (resp, a receive), with all the 
+specified arguments. The actual send or receive is initiated by a call to 
+\texttt{MPI\_START(request)} and completed by a call to 
+\texttt{MPI\_WAIT(request)}, or other completion call; the communication can 
+then be restarted anew with a new call to \texttt{MPI\_START}.
+
+We propose to execute on the host the calls to \texttt{MPI\_SEND\_INIT} and 
+\texttt{MPI\_RECV\_INIT}; the calls to \texttt{MPI\_START} and 
+\texttt{MPI\_WAIT} will be executed on the device. To this purpose, we propose 
+three new functions.
+
+One function to map opaque request objects from host data environment to device 
+data environment:
+
+\texttt{MPI\_MAP\_REQUESTS(count, device\_number, array\_of\_host\_requests, 
+array\_of\_device\_requests)}.
+
+The call is inoked on the host and returns device pointers that can be passed 
+to the device in order to 
+invoke \texttt{START} and \texttt{WAIT}, using the \texttt{use\_device\_ptr} 
+OpenMP clause.
+
+\texttt{MPI\_DEV\_INIT(count, array\_of\_requests)}
+
+The call is invoked on the device (as if the function was declared with 
+\texttt{declare target directive} in OpenMP). It starts all the communications 
+indicated by the array of requests.
+	
+\texttt{MPI\_DEV\_WAIT(count, array\_of\_requests)}	
+
+The call is invoked on the device and completes all the communications 
+indicated by the array of requests; it does not return status arguments.
+
+If this approach proves useful, then it can be extended to other nonblocking 
+MPI communications -- in particular, nonblocking collectives.
+
+
+
+
+
+
+
+
+	\
