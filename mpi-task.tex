@@ -127,7 +127,7 @@ If the OpenMP mode is \texttt{master} then \texttt{crt\_wait(cond)}  and\\
 \item
 If OpenMP is in the \texttt{thread} mode then \texttt{crt\_wait(cond)}  marks 
 the calling thread as not runnable until the condition is set on by a call to 
-\texttt{crt\_signal(cond)}
+\texttt{crt\_signal(cond)}.
 \item
 If OpenMP is in the \texttt{task} mode then \texttt{crt\_wait(cond)}  marks 
 the calling task as not runnable until the condition is set on by a call to\\
@@ -152,12 +152,13 @@ threads (resp. tasks). Note that efficient OpenMP support to task dependencies
 requires a mechanism to mark tasks as blocked until their dependencies are 
 satisfied. The same mechanism can be used here.
 
-In addition, the implementation of this interface requires the use of a "hard 
-yield" that returns control to the scheduler.  For threads, the POSIX 
-\texttt{pthread\_yield()} is a hard yield. For tasks, an OpenMP runtime can 
-implement \texttt{omp task yield} as a noop, so one either needs to change the 
-behavior of \texttt{omp task yield} to be a hard yield, or expose to MPI an 
-additional hard yield function.  
+The invocation of \texttt{crt\_wait} should return control to the thread (resp. 
+task) scheduler. For threads, the POSIX 
+\texttt{pthread\_yield()} can be used for that purpose. For tasks, an OpenMP 
+runtime can 
+implement \texttt{omp task yield} as a noop; in which case, it cannot be used 
+in the implementation of \texttt{crt\_wait}. This is not a significant problem 
+as \texttt{crt\_wait} will be part of the OpenMP runtime.
 
 \subsubsection{MPI}
 
@@ -208,5 +209,6 @@ unique event to be signaled; and a request is associated with a unique thread
 or task.
 
 The proposal requires minimal changes in the MPI code -- namely, an extra field 
-in requests objects, and a call to \texttt{crt\_signal()} upon completion of a 
+in requests objects, a call to \texttt{crt\_wait} when an MPI call blocks and a 
+call to \texttt{crt\_signal()} upon completion of a 
 communication.

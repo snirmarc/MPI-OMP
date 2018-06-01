@@ -78,7 +78,7 @@
 				addition to handling the specific call, the progress engine is 
 				invoked.
 				\item 
-				Using a dedicated \emph{progress thread} that continuously 
+				Using a dedicated \emph{progress thread} or that continuously 
 				executes the progress engine.
 						\end{enumerate}
 			The first alternative has the disadvantage that progress may not 
@@ -105,7 +105,9 @@
 			those described in 
 			\cite{hoefler2008message,denis2014pioman},can dynamically vary the 
 			resource 
-			consumption of progress threads.
+			consumption of progress threads. It is also possible to reduce 
+			interference between the progress engine and the computation by 
+			using a separate progress process \cite{si2015casper}.
 			
 			The use of a progress thread is likely to be important for the 
 			performance of non-blocking collective operations: A process that 
