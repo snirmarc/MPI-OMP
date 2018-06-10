@@ -573,3 +573,39 @@ url="https://doi.org/10.1007/s00450-011-0157-1"
     title = {{MPICH}},
     author = {MPICH Team}
 }
+
+@InProceedings{datatype2012,
+author="Schneider, Timo
+and Gerstenberger, Robert
+and Hoefler, Torsten",
+editor="Tr{\"a}ff, Jesper Larsson
+and Benkner, Siegfried
+and Dongarra, Jack J.",
+title="Micro-applications for Communication Data Access Patterns and MPI Datatypes",
+booktitle="Recent Advances in the Message Passing Interface",
+year="2012",
+publisher="Springer Berlin Heidelberg",
+address="Berlin, Heidelberg",
+pages="121--131",
+abstract="Data is often communicated from different locations in application memory and is commonly serialized (copied) to send buffers or from receive buffers. MPI datatypes are a way to avoid such intermediate copies and optimize communications, however, it is often unclear which implementation and optimization choices are most useful in practice. We extracted the send/recv-buffer access pattern of a representative set of scientific applications into micro-applications that isolate their data access patterns. We also observed that the buffer-access patterns in applications can be categorized into three different groups. Our micro-applications show that up to 90{\%} of the total communication time can be spent with local serialization and we found significant performance discrepancies between state-of-the-art MPI implementations. Our micro-applications aim to provide a standard benchmark for MPI datatype implementations to guide optimizations similarly to SPEC CPU and the Livermore loops do for compiler optimizations.",
+isbn="978-3-642-33518-1"
+}
+
+@inproceedings{Gysi:2016:DHS:3014904.3014974,
+ author = {Gysi, Tobias and B\"{a}r, Jeremia and Hoefler, Torsten},
+ title = {dCUDA: Hardware Supported Overlap of Computation and Communication},
+ booktitle = {Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis},
+ series = {SC '16},
+ year = {2016},
+ isbn = {978-1-4673-8815-3},
+ location = {Salt Lake City, Utah},
+ pages = {52:1--52:12},
+ articleno = {52},
+ numpages = {12},
+ url = {http://dl.acm.org.proxy2.library.illinois.edu/citation.cfm?id=3014904.3014974},
+ acmid = {3014974},
+ publisher = {IEEE Press},
+ address = {Piscataway, NJ, USA},
+ keywords = {distributed memory, gpu, latency hiding, programming model, remote memory access},
+} 
+
